@@ -75,3 +75,23 @@ func (s *RaftStore) LeaderSignBlock(req CosignerSignBlockRequest) (*CosignerSign
 		Signature: res.GetSignature(),
 	}, nil
 }
+
+func (s *RaftStore) LeaderSignBlockECDSA(req CosignerSignBlockRequest) (*CosignerSignBlockResponse, error) {
+	client, conn, err := s.getLeaderGRPCClient()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	context, cancelFunc := getContext()
+	defer cancelFunc()
+	res, err := client.SignBlockECDSA(context, &proto.CosignerGRPCSignBlockRequest{
+		ChainID: req.ChainID,
+		Block:   req.Block.toProto(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &CosignerSignBlockResponse{
+		Signature: res.GetSignature(),
+	}, nil
+}

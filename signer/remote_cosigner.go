@@ -6,6 +6,7 @@ import (
 	"time"
 
 	proto "github.com/strangelove-ventures/horcrux/signer/proto"
+	"github.com/taurusgroup/multi-party-sig/pkg/protocol"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -105,4 +106,47 @@ func (cosigner *RemoteCosigner) SetEphemeralSecretPartsAndSign(
 		Timestamp:       time.Unix(0, res.GetTimestamp()),
 		Signature:       res.GetSignature(),
 	}, nil
+}
+
+func (cosigner *RemoteCosigner) Sign(incompleteSignatures []*protocol.Message, data []byte) ([]byte, error) {
+	client, conn, err := cosigner.getGRPCClient()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	context, cancelFunc := getContext()
+	defer cancelFunc()
+
+	var insigsB [][]byte
+	for i, incsig := range incompleteSignatures {
+		insigsB[i], err = incsig.MarshalBinary()
+		if err != nil {
+			return nil, err
+		}
+	}
+	res, err := client.SignECDSA(context, &proto.SignECDSARequest{Incsig: insigsB, Data: data})
+	if err != nil {
+		return nil, err
+	}
+	return res.Signature, nil
+}
+
+func (cosigner *RemoteCosigner) IncompleteSignature(data []byte) (*protocol.Message, error) {
+	client, conn, err := cosigner.getGRPCClient()
+	if err != nil {
+		return nil, err
+	}
+	defer conn.Close()
+	context, cancelFunc := getContext()
+	defer cancelFunc()
+
+	res, err := client.IncSig(context, &proto.IncSigRequest{Data: data})
+	if err != nil {
+		return nil, err
+	}
+	var incsig *protocol.Message
+	if err := incsig.UnmarshalBinary(res.Incsig); err != nil {
+		return nil, err
+	}
+	return incsig, nil
 }

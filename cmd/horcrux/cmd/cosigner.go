@@ -11,8 +11,10 @@ import (
 	"time"
 
 	"github.com/cosmos/cosmos-sdk/types/bech32"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/spf13/cobra"
 	"github.com/strangelove-ventures/horcrux/signer"
+	"github.com/taurusgroup/multi-party-sig/protocols/cmp"
 	tmlog "github.com/tendermint/tendermint/libs/log"
 	tmService "github.com/tendermint/tendermint/libs/service"
 	"github.com/tendermint/tendermint/types"
@@ -44,6 +46,18 @@ func AddressCmd() *cobra.Command {
 		SilenceUsage: true,
 		Args:         cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
+			if config.ECDSA {
+				privCofigPath := filepath.Join(config.HomeDir, "cmp_config.txt")
+
+				privPart, err := signer.LoadCMPconfig(privCofigPath)
+				if err != nil {
+					return err
+				}
+
+				PrintAddressPubKeyECDSA(privPart)
+				return nil
+			}
+
 			err = validateCosignerConfig(config.Config)
 			if err != nil {
 				return
@@ -101,7 +115,7 @@ func AddressCmd() *cobra.Command {
 func StartCosignerCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "start",
-		Short:        "Start cosigner process",
+		Short:        "Start cosigner process(eddsa or ecdsa)",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, args []string) (err error) {
@@ -198,6 +212,23 @@ func StartCosignerCmd() *cobra.Command {
 
 			localCosigner := signer.NewLocalCosigner(localCosignerConfig)
 
+			if config.ECDSA {
+				privCofigPath := filepath.Join(config.HomeDir, "cmp_config.txt")
+				presignaturePath := filepath.Join(config.HomeDir, "cmp_presig.txt")
+
+				privPart, err := signer.LoadCMPconfig(privCofigPath)
+				if err != nil {
+					return err
+				}
+				preSignature, err := signer.LoadCMPpresign(presignaturePath)
+				if err != nil {
+					return err
+				}
+
+				ecdsaSigner := signer.NewLocalCosignerECDSA(privPart, preSignature)
+				localCosigner.SetCMPcosigner(ecdsaSigner)
+			}
+
 			timeout, err := time.ParseDuration(config.Config.CosignerConfig.Timeout)
 			if err != nil {
 				log.Fatalf("Error parsing configured timeout: %s. %v\n", config.Config.CosignerConfig.Timeout, err)
@@ -253,4 +284,23 @@ func StartCosignerCmd() *cobra.Command {
 	}
 
 	return cmd
+}
+
+func PrintAddressPubKeyECDSA(c *cmp.Config) error {
+	publicKey, err := c.PublicPoint().MarshalBinary()
+	if err != nil {
+		return err
+	}
+
+	pubkeyECDSA, err := crypto.DecompressPubkey(publicKey)
+	if err != nil {
+		return err
+	}
+
+	pub := crypto.FromECDSAPub(pubkeyECDSA)
+	address := crypto.PubkeyToAddress(*pubkeyECDSA).Hex()
+
+	fmt.Printf("address: %s\n", address)
+	fmt.Printf("public key: %s\n", hex.EncodeToString(pub))
+	return nil
 }

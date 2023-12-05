@@ -6,6 +6,10 @@ import (
 	"encoding/json"
 	"os"
 
+	"github.com/fxamacker/cbor/v2"
+	"github.com/taurusgroup/multi-party-sig/pkg/ecdsa"
+	"github.com/taurusgroup/multi-party-sig/pkg/math/curve"
+	"github.com/taurusgroup/multi-party-sig/protocols/cmp"
 	amino "github.com/tendermint/go-amino"
 	tmCrypto "github.com/tendermint/tendermint/crypto"
 	tmEd25519 "github.com/tendermint/tendermint/crypto/ed25519"
@@ -131,4 +135,32 @@ func LoadCosignerKey(file string) (CosignerKey, error) {
 	}
 
 	return pvKey, nil
+}
+
+func LoadCMPconfig(file string) (*cmp.Config, error) {
+	config := cmp.EmptyConfig(curve.Secp256k1{})
+	configB, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := config.UnmarshalBinary(configB); err != nil {
+		return nil, err
+	}
+
+	return config, nil
+}
+
+func LoadCMPpresign(file string) (*ecdsa.PreSignature, error) {
+	presign := ecdsa.EmptyPreSignature(curve.Secp256k1{})
+	presigB, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := cbor.Unmarshal(presigB, presign); err != nil {
+		return nil, err
+	}
+
+	return presign, nil
 }

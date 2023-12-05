@@ -6,10 +6,30 @@ package proto;
 
 service CosignerGRPC {
 	rpc SignBlock (CosignerGRPCSignBlockRequest) returns (CosignerGRPCSignBlockResponse) {}
+	rpc SignBlockECDSA (CosignerGRPCSignBlockRequest) returns (CosignerGRPCSignBlockResponse) {}
 	rpc SetEphemeralSecretPartsAndSign (CosignerGRPCSetEphemeralSecretPartsAndSignRequest) returns (CosignerGRPCSetEphemeralSecretPartsAndSignResponse) {}
   rpc GetEphemeralSecretParts (CosignerGRPCGetEphemeralSecretPartsRequest) returns (CosignerGRPCGetEphemeralSecretPartsResponse) {}
   rpc TransferLeadership (CosignerGRPCTransferLeadershipRequest) returns (CosignerGRPCTransferLeadershipResponse) {}
   rpc GetLeader (CosignerGRPCGetLeaderRequest) returns (CosignerGRPCGetLeaderResponse) {}
+  rpc SignECDSA(SignECDSARequest) returns (SignECDSAResponse) {}
+  rpc IncSig(IncSigRequest) returns (IncSigResponse) {}
+}
+
+message SignECDSARequest {
+	repeated bytes incsig = 1;
+	bytes data = 2;
+}
+
+message SignECDSAResponse {
+	bytes signature = 1;
+}
+
+message IncSigRequest {
+	bytes data = 1;
+}
+
+message IncSigResponse {
+	bytes incsig = 1;
 }
 
 message Block {

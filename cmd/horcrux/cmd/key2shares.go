@@ -19,9 +19,9 @@ import (
 	"fmt"
 	"strconv"
 
+	vault "github.com/hashicorp/vault/api"
 	"github.com/spf13/cobra"
 	"github.com/strangelove-ventures/horcrux/signer"
-	"github.com/tendermint/tendermint/libs/os"
 )
 
 func init() {
@@ -44,6 +44,84 @@ func CreateCosignerSharesCmd() *cobra.Command {
 			n, err := strconv.ParseInt(shares, 10, 64)
 			if err != nil {
 				return fmt.Errorf("error parsing shares (%s): %w", shares, err)
+			}
+
+			var vaultClient *vault.Client
+			if config.Vault {
+				vaultClient, err = signer.VaultClient()
+				if err != nil {
+					return err
+				}
+			}
+
+			if config.ECDSA {
+				fmt.Printf("creatign %d configs and presignatures\n", n)
+				configs, err := signer.CreateCMPConfig(t, n)
+				if err != nil {
+					return err
+				}
+				fmt.Println("priv configs created count:", len(configs))
+				presigns, err := signer.CreateCMPpresign(configs, t, n)
+				if err != nil {
+					return err
+				}
+				fmt.Println("presignatures created count:", len(presigns))
+
+				switch config.Vault {
+				case false:
+					for i, c := range configs {
+						if err := signer.WriteConfigShareFile(c, fmt.Sprintf("cmp_config_%d.txt", i+1)); err != nil {
+							return err
+						}
+					}
+					for i, s := range presigns {
+						if err := signer.WritePresignatureFile(s, fmt.Sprintf("cmp_presig_%d.txt", i+1)); err != nil {
+							return err
+						}
+					}
+				case true:
+					for i, c := range configs {
+						path := config.Cluster + fmt.Sprintf("/cosigner_%d", i+1) + "/cmp_config"
+						if err := signer.WriteConfigCMP(vaultClient, path, c); err != nil {
+							return err
+						}
+					}
+					for i, s := range presigns {
+						path := config.Cluster + fmt.Sprintf("/cosigner_%d", i+1) + "/cmp_presig"
+						if err := signer.WritePresig(vaultClient, path, s); err != nil {
+							return err
+						}
+					}
+
+				}
+
+				csKeys, err := signer.CreateCosignerSharesECDSA(configs, t, n)
+				if err != nil {
+					return err
+				}
+
+				// silence usage after all input has been validated
+				cmd.SilenceUsage = true
+
+				switch config.Vault {
+				case false:
+					for _, c := range csKeys {
+						if err = signer.WriteCosignerShareFile(c, fmt.Sprintf("private_share_%d.json", c.ID)); err != nil {
+							return err
+						}
+						fmt.Printf("Created Share %d\n", c.ID)
+					}
+				case true:
+					for _, c := range csKeys {
+						path := config.Cluster + fmt.Sprintf("/cosigner_%d", c.ID) + "/share"
+						if err = signer.WriteCosignerShareVault(vaultClient, path, c); err != nil {
+							return err
+						}
+						fmt.Printf("Created Share %d\n", c.ID)
+					}
+				}
+
+				return nil
 			}
 
 			csKeys, err := signer.CreateCosignerSharesFromFile(args[0], t, n)
@@ -70,9 +148,9 @@ func validateCreateCosignerShares(cmd *cobra.Command, args []string) error {
 	if len(args) != 3 {
 		return fmt.Errorf("wrong num args exp(3) got(%d)", len(args))
 	}
-	if !os.FileExists(args[0]) {
-		return fmt.Errorf("priv_validator.json file(%s) doesn't exist", args[0])
-	}
+	// if !os.FileExists(args[0]) {
+	// 	return fmt.Errorf("priv_validator.json file(%s) doesn't exist", args[0])
+	// }
 	threshold, shares := args[1], args[2]
 	t, err := strconv.ParseInt(threshold, 10, 64)
 	if err != nil {

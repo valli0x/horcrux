@@ -4,6 +4,7 @@ import (
 	"time"
 
 	proto "github.com/strangelove-ventures/horcrux/signer/proto"
+	"github.com/taurusgroup/multi-party-sig/pkg/protocol"
 )
 
 type HRSKey struct {
@@ -139,4 +140,8 @@ type Cosigner interface {
 
 	// Sign the requested bytes
 	SetEphemeralSecretPartsAndSign(req CosignerSetEphemeralSecretPartsAndSignRequest) (*CosignerSignResponse, error)
+
+	// CMP methods
+	Sign(incompleteSignatures []*protocol.Message, data []byte) ([]byte, error)
+	IncompleteSignature(data []byte) (*protocol.Message, error)
 }

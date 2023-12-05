@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/raft"
 	proto "github.com/strangelove-ventures/horcrux/signer/proto"
+	"github.com/taurusgroup/multi-party-sig/pkg/protocol"
 	"github.com/tendermint/tendermint/crypto"
 	"github.com/tendermint/tendermint/libs/log"
 	tmProto "github.com/tendermint/tendermint/proto/tendermint/types"
@@ -19,6 +20,7 @@ import (
 
 type ThresholdValidator struct {
 	threshold int
+	ecdsa     bool
 
 	pubkey crypto.PubKey
 
@@ -43,6 +45,7 @@ type ThresholdValidator struct {
 }
 
 type ThresholdValidatorOpt struct {
+	ECDSA     bool
 	Pubkey    crypto.PubKey
 	Threshold int
 	SignState SignState
@@ -55,6 +58,7 @@ type ThresholdValidatorOpt struct {
 // NewThresholdValidator creates and returns a new ThresholdValidator
 func NewThresholdValidator(opt *ThresholdValidatorOpt) *ThresholdValidator {
 	validator := &ThresholdValidator{}
+	validator.ecdsa = opt.ECDSA
 	validator.cosigner = opt.Cosigner
 	validator.peers = opt.Peers
 	validator.threshold = opt.Threshold
@@ -98,6 +102,15 @@ func (pv *ThresholdValidator) SignVote(chainID string, vote *tmProto.Vote) error
 		Timestamp: vote.Timestamp,
 		SignBytes: tm.VoteSignBytes(chainID, vote),
 	}
+
+	if pv.ecdsa {
+		sig, stamp, err := pv.SignBlockECDSA(chainID, block)
+
+		vote.Signature = sig
+		vote.Timestamp = stamp
+		return err
+	}
+
 	sig, stamp, err := pv.SignBlock(chainID, block)
 
 	vote.Signature = sig
@@ -116,6 +129,15 @@ func (pv *ThresholdValidator) SignProposal(chainID string, proposal *tmProto.Pro
 		Timestamp: proposal.Timestamp,
 		SignBytes: tm.ProposalSignBytes(chainID, proposal),
 	}
+
+	if pv.ecdsa {
+		sig, stamp, err := pv.SignBlockECDSA(chainID, block)
+
+		proposal.Signature = sig
+		proposal.Timestamp = stamp
+		return err
+	}
+
 	sig, stamp, err := pv.SignBlock(chainID, block)
 
 	proposal.Signature = sig
@@ -496,4 +518,127 @@ func (pv *ThresholdValidator) SignBlock(chainID string, block *Block) ([]byte, t
 	timedSignBlockLag.Observe(timeSignBlock)
 
 	return signature, stamp, nil
+}
+
+func (pv *ThresholdValidator) SignBlockECDSA(chainID string, block *Block) ([]byte, time.Time, error) {
+	height, round, step, stamp, signBytes := block.Height, block.Round, block.Step, block.Timestamp, block.SignBytes
+
+	// Only the leader can execute this function. Followers can handle the requests,
+	// but they just need to proxy the request to the raft leader
+	if pv.raftStore.raft == nil {
+		return nil, stamp, errors.New("raft not yet initialized")
+	}
+	if pv.raftStore.raft.State() != raft.Leader {
+		pv.logger.Debug("I am not the raft leader. Proxying request to the leader")
+		totalNotRaftLeader.Inc()
+		signRes, err := pv.raftStore.LeaderSignBlockECDSA(CosignerSignBlockRequest{chainID, block})
+		if err != nil {
+			if _, ok := err.(*rpcTypes.RPCError); ok {
+				rpcErrUnwrapped := err.(*rpcTypes.RPCError).Data
+				// Need to return BeyondBlockError after proxy since the error type will be lost over RPC
+				if len(rpcErrUnwrapped) > 33 && rpcErrUnwrapped[:33] == "Progress already started on block" {
+					return nil, stamp, &BeyondBlockError{msg: rpcErrUnwrapped}
+				}
+			}
+			return nil, stamp, err
+		}
+		return signRes.Signature, stamp, nil
+	}
+
+	totalRaftLeader.Inc()
+	pv.logger.Debug("I am the raft leader. Managing the sign process for this block")
+
+	// Keep track of the last block that we began the signing process for. Only allow one attempt per block
+	if err := pv.SaveLastSignedStateInitiated(NewSignStateConsensus(height, round, step)); err != nil {
+		switch err.(type) {
+		case *SameHRSError:
+			// Wait for last sign state signature to be the same block
+			signAgain := false
+			for i := 0; i < 100; i++ {
+				existingSignature, existingTimestamp, sameBlockErr := pv.getExistingBlockSignature(block)
+				if sameBlockErr == nil {
+					if existingSignature == nil {
+						signAgain = true
+						break
+					}
+					return existingSignature, existingTimestamp, nil
+				}
+				switch sameBlockErr.(type) {
+				case *StillWaitingForBlockError:
+					time.Sleep(10 * time.Millisecond)
+					continue
+				default:
+					return nil, existingTimestamp, sameBlockErr
+				}
+
+			}
+			if !signAgain {
+				return nil, stamp, errors.New("timed out waiting for block signature from cluster")
+			}
+		default:
+			existingSignature, existingTimestamp, sameBlockErr := pv.getExistingBlockSignature(block)
+			if sameBlockErr == nil {
+				return existingSignature, stamp, nil
+			}
+			return nil, existingTimestamp, pv.newBeyondBlockError(HRSKey{
+				Height: height,
+				Round:  round,
+				Step:   step,
+			})
+		}
+	}
+
+	getIncsigWG := &sync.WaitGroup{}
+	getIncsigWG.Add(pv.threshold - 1) // Only wait until we have threshold sigs
+
+	parts := make(map[Cosigner]*protocol.Message, pv.threshold-1)
+	for _, peer := range pv.peers {
+		go pv.getIncsig(peer, getIncsigWG, parts, signBytes)
+	}
+
+	// Wait for threshold cosigners to be complete
+	if waitUntilCompleteOrTimeout(getIncsigWG, 5*time.Second) {
+		return nil, stamp, errors.New("timed out waiting for incomplete signature")
+	}
+
+	incoSigs := make([]*protocol.Message, 0, len(parts))
+	for _, incsig := range parts {
+		incoSigs = append(incoSigs, incsig)
+	}
+
+	signature, err := pv.cosigner.Sign(incoSigs, signBytes)
+	if err != nil {
+		return nil, stamp, err
+	}
+
+	newLss := SignStateConsensus{
+		Height:    height,
+		Round:     round,
+		Step:      step,
+		Signature: signature,
+		SignBytes: signBytes,
+	}
+	// Err will be present if newLss is not above high watermark
+	err = pv.lastSignState.Save(newLss, &pv.lastSignStateMutex, true)
+	if err != nil {
+		if _, isSameHRSError := err.(*SameHRSError); !isSameHRSError {
+			return nil, stamp, err
+		}
+	}
+	// Emit last signed state to cluster
+	err = pv.raftStore.Emit(raftEventLSS, newLss)
+	if err != nil {
+		pv.logger.Error("Error emitting LSS", err.Error())
+	}
+
+	return nil, stamp, nil
+}
+
+func (pv *ThresholdValidator) getIncsig(cosigner Cosigner, wg *sync.WaitGroup, parts map[Cosigner]*protocol.Message, data []byte) {
+	incsig, err := cosigner.IncompleteSignature(data)
+	if err != nil {
+		pv.logger.Error("Error getting secret parts", "peer", cosigner.GetID(), "err", err)
+	}
+	parts[cosigner] = incsig
+	wg.Done()
 }

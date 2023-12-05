@@ -12,8 +12,9 @@ import (
 )
 
 var (
-	homeDir string
-	config  RuntimeConfig
+	homeDir, clusterName string
+	ecdsa, vaultConf     bool
+	config               RuntimeConfig
 )
 
 var rootCmd = &cobra.Command{
@@ -33,6 +34,9 @@ func Execute() {
 func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&homeDir, "home", "", "Directory for config and data (default is $HOME/.horcrux)")
+	rootCmd.PersistentFlags().BoolVar(&ecdsa, "ecdsa", false, "ECDSA cosigning")
+	rootCmd.PersistentFlags().BoolVar(&vaultConf, "vault", false, "From vault configuration")
+	rootCmd.PersistentFlags().StringVar(&clusterName, "cluster", "horcrux", "Cluster name")
 }
 
 // initConfig reads in config file and ENV variables if set.
@@ -50,13 +54,16 @@ func initConfig() {
 		ConfigFile: filepath.Join(home, "config.yaml"),
 		StateDir:   filepath.Join(home, "state"),
 		PidFile:    filepath.Join(home, "horcrux.pid"),
+		ECDSA:      ecdsa,
+		Vault:      vaultConf,
+		Cluster:    clusterName,
 	}
 	viper.SetConfigFile(config.ConfigFile)
 	viper.SetEnvPrefix("horcrux")
 	viper.AutomaticEnv()
 	err := viper.ReadInConfig()
 	if err != nil {
-		fmt.Println("no config exists at default location", err)
+		// fmt.Println("no config exists at default location", err)
 		return
 	}
 	handleInitError(viper.Unmarshal(&config.Config))

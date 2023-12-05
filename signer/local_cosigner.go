@@ -11,6 +11,14 @@ import (
 	"sync"
 	"time"
 
+	cryptoTend "github.com/tendermint/tendermint/crypto"
+	secp256k1Tend "github.com/tendermint/tendermint/crypto/secp256k1"
+	cryptoEth "github.com/ethereum/go-ethereum/crypto"
+
+	"github.com/taurusgroup/multi-party-sig/pkg/ecdsa"
+	"github.com/taurusgroup/multi-party-sig/pkg/pool"
+	"github.com/taurusgroup/multi-party-sig/pkg/protocol"
+	"github.com/taurusgroup/multi-party-sig/protocols/cmp"
 	tmcryptoed25519 "github.com/tendermint/tendermint/crypto/ed25519"
 	tmjson "github.com/tendermint/tendermint/libs/json"
 	"gitlab.com/unit410/edwards25519"
@@ -103,6 +111,9 @@ type LocalCosigner struct {
 	peers   map[int]CosignerPeer
 
 	address string
+
+	// for CMP
+	ecdsaCosigner *LocalCosignerECDSA
 }
 
 func (cosigner *LocalCosigner) SaveLastSignedState(signState SignStateConsensus) error {
@@ -126,15 +137,22 @@ func NewLocalCosigner(cfg LocalCosignerConfig) *LocalCosigner {
 	}
 
 	// cache the public key bytes for signing operations
-	switch ed25519Key := cosigner.key.PubKey.(type) {
+	switch pubkey := cosigner.key.PubKey.(type) {
 	case tmcryptoed25519.PubKey:
-		cosigner.pubKeyBytes = make([]byte, len(ed25519Key))
-		copy(cosigner.pubKeyBytes, ed25519Key[:])
+		cosigner.pubKeyBytes = make([]byte, len(pubkey))
+		copy(cosigner.pubKeyBytes, pubkey[:])
+	case secp256k1Tend.PubKey:
+		cosigner.pubKeyBytes = make([]byte, len(pubkey))
+		copy(cosigner.pubKeyBytes, pubkey[:])
 	default:
-		panic("Not an ed25519 public key")
+		panic("Not an ed25519 or secp256k1 public key")
 	}
 
 	return cosigner
+}
+
+func (cosigner *LocalCosigner) SetCMPcosigner(ecdsaCosigner *LocalCosignerECDSA) {
+	cosigner.ecdsaCosigner = ecdsaCosigner
 }
 
 // GetID returns the id of the cosigner
@@ -490,4 +508,86 @@ func (cosigner *LocalCosigner) SetEphemeralSecretPartsAndSign(
 
 	res, err := cosigner.sign(CosignerSignRequest{req.SignBytes})
 	return &res, err
+}
+
+func (l *LocalCosigner) GetPubKeyECDSA() (cryptoTend.PubKey, error) {	
+	return l.ecdsaCosigner.GetPubKey()
+}
+
+func (l *LocalCosigner) Sign(incompleteSignatures []*protocol.Message, data []byte) ([]byte, error) {
+	return l.ecdsaCosigner.Sign(incompleteSignatures, data)
+}
+
+func (l *LocalCosigner) IncompleteSignature(data []byte) (*protocol.Message, error) {
+	return l.ecdsaCosigner.IncompleteSignature(data)
+}
+
+type LocalCosignerECDSA struct {
+	privPart     *cmp.Config
+	preSignature *ecdsa.PreSignature
+}
+
+func NewLocalCosignerECDSA(privPart *cmp.Config, preSignature *ecdsa.PreSignature) *LocalCosignerECDSA {
+	return &LocalCosignerECDSA{
+		privPart:     privPart,
+		preSignature: preSignature,
+	}
+}
+
+func (l *LocalCosignerECDSA) Sign(incompleteSignatures []*protocol.Message, data []byte) ([]byte, error) {
+	pl := pool.NewPool(0)
+	defer pl.TearDown()
+
+	h, err := protocol.NewMultiHandler(cmp.PresignOnline(l.privPart, l.preSignature, data, pl), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	<-h.Listen() // skip first message
+	for _, incSig := range incompleteSignatures {
+		h.Accept(incSig)
+	}
+
+	signResult, err := h.Result()
+	if err != nil {
+		return nil, err
+	}
+	signature := signResult.(*ecdsa.Signature)
+	if !signature.Verify(l.privPart.PublicPoint(), data) {
+		return nil, errors.New("failed to verify cmp signature")
+	}
+
+	signatureETHformat, err := signature.SigEthereum()
+	if err != nil {
+		return nil, err
+	}
+	return signatureETHformat, nil
+}
+
+func (l *LocalCosignerECDSA) IncompleteSignature(data []byte) (*protocol.Message, error) {
+	pl := pool.NewPool(0)
+	defer pl.TearDown()
+
+	h, err := protocol.NewMultiHandler(cmp.PresignOnline(l.privPart, l.preSignature, data, pl), nil)
+	if err != nil {
+		return nil, err
+	}
+	round8, ok := <-h.Listen()
+	if !ok {
+		return nil, errors.New("failed to getting incomplete signature")
+	}
+	return round8, nil
+}
+
+func (l *LocalCosignerECDSA) GetPubKey() (cryptoTend.PubKey, error) {
+	publicKey, err := l.privPart.PublicPoint().MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	pubkeyECDSA, err := cryptoEth.DecompressPubkey(publicKey)
+	if err != nil {
+		return nil, err
+	}
+	var pub secp256k1Tend.PubKey = cryptoEth.FromECDSAPub(pubkeyECDSA)
+	return pub, nil
 }

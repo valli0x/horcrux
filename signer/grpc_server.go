@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/raft"
 	proto "github.com/strangelove-ventures/horcrux/signer/proto"
+	"github.com/taurusgroup/multi-party-sig/pkg/protocol"
 )
 
 type GRPCServer struct {
@@ -99,4 +100,55 @@ func (rpc *GRPCServer) GetLeader(
 ) (*proto.CosignerGRPCGetLeaderResponse, error) {
 	leader := rpc.raftStore.GetLeader()
 	return &proto.CosignerGRPCGetLeaderResponse{Leader: string(leader)}, nil
+}
+
+func (rpc *GRPCServer) SignBlockECDSA(
+	ctx context.Context, req *proto.CosignerGRPCSignBlockRequest) (*proto.CosignerGRPCSignBlockResponse, error) {
+	block := &Block{
+		Height:    req.Block.GetHeight(),
+		Round:     req.Block.GetRound(),
+		Step:      int8(req.Block.GetStep()),
+		SignBytes: req.Block.GetSignBytes(),
+		Timestamp: time.Unix(0, req.Block.GetTimestamp()),
+	}
+	res, _, err := rpc.thresholdValidator.SignBlockECDSA(req.ChainID, block)
+	if err != nil {
+		return nil, err
+	}
+	return &proto.CosignerGRPCSignBlockResponse{
+		Signature: res,
+	}, nil
+}
+
+func (rpc *GRPCServer) SignECDSA(ctx context.Context, req *proto.SignECDSARequest) (*proto.SignECDSAResponse, error) {
+	incsigsB, data := req.GetIncsig(), req.GetData()
+	
+	incsigs := make([]*protocol.Message, 0, len(incsigsB))
+	for i, incsigB := range incsigsB {
+		if err := incsigs[i].UnmarshalBinary(incsigB); err != nil {
+			return nil, err
+		}
+	}
+
+	signature, err := rpc.cosigner.ecdsaCosigner.Sign(incsigs, data)
+	if err != nil {
+		return nil, err
+	}
+	return &proto.SignECDSAResponse{
+		Signature: signature,
+	}, nil
+}
+
+func (rpc *GRPCServer) IncSig(ctx context.Context, req *proto.IncSigRequest) (*proto.IncSigResponse, error) {
+	res, err := rpc.cosigner.ecdsaCosigner.IncompleteSignature(req.GetData())
+	if err != nil {
+		return nil, err
+	}
+	incsig, err := res.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+	return &proto.IncSigResponse{
+		Incsig: incsig,
+	}, nil
 }
