@@ -13,7 +13,7 @@ import (
 
 var (
 	homeDir, clusterName string
-	ecdsa, vaultConf     bool
+	ecdsa                bool
 	config               RuntimeConfig
 )
 
@@ -35,7 +35,6 @@ func init() {
 	cobra.OnInitialize(initConfig)
 	rootCmd.PersistentFlags().StringVar(&homeDir, "home", "", "Directory for config and data (default is $HOME/.horcrux)")
 	rootCmd.PersistentFlags().BoolVar(&ecdsa, "ecdsa", false, "ECDSA cosigning")
-	rootCmd.PersistentFlags().BoolVar(&vaultConf, "vault", false, "From vault configuration")
 	rootCmd.PersistentFlags().StringVar(&clusterName, "cluster", "horcrux", "Cluster name")
 }
 
@@ -55,7 +54,6 @@ func initConfig() {
 		StateDir:   filepath.Join(home, "state"),
 		PidFile:    filepath.Join(home, "horcrux.pid"),
 		ECDSA:      ecdsa,
-		Vault:      vaultConf,
 		Cluster:    clusterName,
 	}
 	viper.SetConfigFile(config.ConfigFile)

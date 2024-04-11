@@ -524,7 +524,6 @@ type RuntimeConfig struct {
 	StateDir   string
 	PidFile    string
 	ECDSA      bool
-	Vault      bool
 	Cluster    string
 	Config     DiskConfig
 }
