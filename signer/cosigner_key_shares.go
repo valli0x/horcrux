@@ -3,7 +3,6 @@ package signer
 import (
 	"crypto/rand"
 	"crypto/rsa"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,7 +12,6 @@ import (
 
 	cryptoEth "github.com/ethereum/go-ethereum/crypto"
 	"github.com/fxamacker/cbor/v2"
-	vault "github.com/hashicorp/vault/api"
 	"github.com/taurusgroup/multi-party-sig/pkg/ecdsa"
 	"github.com/taurusgroup/multi-party-sig/pkg/math/curve"
 	"github.com/taurusgroup/multi-party-sig/pkg/party"
@@ -297,98 +295,4 @@ func handlerLoop(id party.ID, h protocol.Handler, network *Network) {
 
 func correctPath(dir string) string {
 	return strings.Trim(dir, "/") + "/"
-}
-
-func WriteCosignerShareVault(client *vault.Client, path string, cosigner CosignerKey) error {
-	jsonBytes, err := json.Marshal(&cosigner)
-	if err != nil {
-		return err
-	}
-
-	_, err = client.Logical().WriteBytes(path, jsonBytes)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func WriteConfigCMP(client *vault.Client, path string, c *cmp.Config) error {
-	data, err := c.MarshalBinary()
-	if err != nil {
-		return err
-	}
-
-	dataBase64 := base64.StdEncoding.EncodeToString(data)
-
-	_, err = client.Logical().Write(path, map[string]interface{}{"key": dataBase64})
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func WritePresig(client *vault.Client, path string, presign *ecdsa.PreSignature) error {
-	data, err := cbor.Marshal(presign)
-	if err != nil {
-		return err
-	}
-
-	dataBase64 := base64.StdEncoding.EncodeToString(data)
-
-	_, err = client.Logical().Write(path, map[string]interface{}{"key": dataBase64})
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-func ReadConfigCMP(client *vault.Client, dir string) (*cmp.Config, error) {
-	secret, err := client.Logical().Read(correctPath(dir) + "cmp_config")
-	if err != nil {
-		return nil, err
-	}
-
-	if secret == nil {
-		return nil, fmt.Errorf("cmp config not found")
-	}
-
-	config := cmp.EmptyConfig(curve.Secp256k1{})
-
-	// if err := config.UnmarshalBinary(secret.Data); err != nil { // TODO
-	// 	return nil, err
-	// }
-
-	return config, nil
-}
-
-func ReadPresig(client *vault.Client, dir string) (*ecdsa.PreSignature, error) {
-	secret, err := client.Logical().Read(correctPath(dir) + "cmp_presig")
-	if err != nil {
-		return nil, err
-	}
-
-	if secret == nil {
-		return nil, fmt.Errorf("presignature not found")
-	}
-
-	presign := ecdsa.EmptyPreSignature(curve.Secp256k1{})
-
-	// if err := cbor.Unmarshal(secret.Data, presign); err != nil { // TODO
-	// 	return nil, err
-	// }
-
-	return presign, nil
-}
-
-func VaultClient() (*vault.Client, error) {
-	config := vault.DefaultConfig()
-
-	client, err := vault.NewClient(config)
-	if err != nil {
-		return nil, fmt.Errorf("unable to initialize Vault client: %v", err)
-	}
-
-	return client, nil
 }
